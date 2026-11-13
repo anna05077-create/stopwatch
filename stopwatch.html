@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>라면 스탑워치</title>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 16px; color: #5a2d4a;
+    font-family: 'DotGothic16', 'Galmuri11', 'Malgun Gothic', monospace;
+    background-color: #ffe3f1;
+    background-image:
+      linear-gradient(45deg, #ffd0e8 25%, transparent 25%, transparent 75%, #ffd0e8 75%),
+      linear-gradient(45deg, #ffd0e8 25%, transparent 25%, transparent 75%, #ffd0e8 75%);
+    background-size: 24px 24px; background-position: 0 0, 12px 12px;
+  }
+  .win {
+    width: 100%; max-width: 440px; background: #fff7fb;
+    border: 3px solid #5a2d4a; box-shadow: 6px 6px 0 #5a2d4a;
+  }
+  .title {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 10px; background: linear-gradient(#ff9ccb, #ff74b4); color: #fff;
+    border-bottom: 3px solid #5a2d4a; font-size: 15px; text-shadow: 1px 1px 0 #5a2d4a;
+  }
+  .title i { font-style: normal; letter-spacing: 3px; }
+  .body { padding: 14px; }
+  canvas {
+    display: block; width: 100%; aspect-ratio: 96 / 72;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+    border: 3px solid #5a2d4a; background: #ffd9ec;
+  }
+  .lcd {
+    margin: 12px 0; padding: 8px; text-align: center; font-size: clamp(32px, 11vw, 46px);
+    background: #cfe8b8; color: #2f4a2a; border: 3px solid #5a2d4a;
+    box-shadow: inset 3px 3px 0 #a9c98e; letter-spacing: 2px;
+  }
+  .lcd small { font-size: .55em; }
+  .btns { display: flex; gap: 12px; }
+  button {
+    flex: 1; height: 50px; font-family: inherit; font-size: 17px; cursor: pointer;
+    background: #ffe27a; color: #5a2d4a; border: 3px solid #5a2d4a;
+    box-shadow: 3px 3px 0 #5a2d4a;
+  }
+  button:active { transform: translate(3px, 3px); box-shadow: none; }
+  button:disabled { background: #e8dde3; color: #a89aa3; cursor: default; box-shadow: 3px 3px 0 #a89aa3; border-color: #a89aa3; }
+  #primary { background: #9fe0a0; }
+  #primary.stop { background: #ff9a9a; }
+  .result {
+    margin-top: 12px; padding: 10px; text-align: center; min-height: 82px;
+    border: 3px dashed #ff74b4; background: #fff; line-height: 1.5;
+  }
+  .result b { display: block; font-size: 20px; margin-bottom: 2px; }
+  .log { margin-top: 8px; font-size: 13px; text-align: center; color: #9a6b88; min-height: 18px; }
+  .hint { margin-top: 6px; font-size: 11px; text-align: center; color: #b996ab; }
+</style>
+</head>
+<body>
+<main class="win">
+  <div class="title"><span>★ 라면 스탑워치 ★</span><i>_ □ X</i></div>
+  <div class="body">
+    <canvas id="cv" width="96" height="72"></canvas>
+    <div class="lcd" id="lcd">00:00<small>.00</small></div>
+    <div class="btns">
+      <button id="secondary" disabled>토핑</button>
+      <button id="primary">불 켜기</button>
+    </div>
+    <div class="result" id="result">뚜껑 속이 궁금해…<br>5분이 가장 맛있대요 ♥</div>
+    <div class="log" id="log"></div>
+    <div class="hint">Space: 시작/정지 · T: 토핑/뚜껑 열기 · R: 다시</div>
+  </div>
+</main>
+
+<script>
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+const lcd = document.getElementById('lcd'), primary = document.getElementById('primary');
+const secondary = document.getElementById('secondary'), resultEl = document.getElementById('result'), logEl = document.getElementById('log');
+
+// ---------- 상태 ----------
+let state = 'idle';           // idle | cooking | paused | reveal
+let elapsed = 0, startMs = 0; // ms
+let toppings = [];            // {type, at(sec), wall}
+let lp = 0;                   // 뚜껑 위치 0(옆) ~ 1(덮음)
+const TOP = [['egg','계란'],['onion','파'],['fish','어묵'],['cheese','치즈']];
+const POS = { egg:[38,35], onion:[48,33.5], fish:[58,36], cheese:[48,38] };
+
+const nowMs = () => state === 'cooking' ? elapsed + performance.now() - startMs : elapsed;
+const sec = () => nowMs() / 1000;
+
+// ---------- 도트 그리기 도우미 ----------
+const px = (x,y,w,h,c) => { g.fillStyle = c; g.fillRect(Math.round(x), Math.round(y), w, h); };
+function ell(cx, cy, rx, ry, c) {
+  g.fillStyle = c;
+  for (let y = -ry; y <= ry; y++) {
+    const w = Math.round(rx * Math.sqrt(Math.max(0, 1 - (y*y) / (ry*ry + 0.01))));
+    g.fillRect(Math.round(cx - w), Math.round(cy + y), w * 2, 1);
+  }
+}
+function hex(c){ return [1,3,5].map(i => parseInt(c.slice(i,i+2),16)); }
+function mix(a, b, t) {
+  t = Math.max(0, Math.min(1, t));
+  const A = hex(a), B = hex(b);
+  return '#' + A.map((v,i) => Math.round(v + (B[i]-v)*t).toString(16).padStart(2,'0')).join('');
+}
+function sprite(x, y, rows, map) {
+  rows.forEach((r, j) => [...r].forEach((ch, i) => { if (map[ch]) px(x+i, y+j, 1, 1, map[ch]); }));
+}
+const HEART = ['.#.#.','#####','#####','.###.','..#..'];
+
+// ---------- 단계 ----------
+function stage(t) {
+  if (t < 180) return { k:'raw',   name:'설익음',    msg:'면이 아직 꼬들꼬들해요… 조금만 더 끓일걸!', icon:'💦' };
+  if (t < 270) return { k:'under', name:'조금 덜 익음', msg:'거의 다 됐는데 아깝다! 살짝 단단해요.', icon:'🤔' };
+  if (t < 330) return { k:'perfect', name:'퍼펙트 라면!', msg:'쫄깃쫄깃 완벽한 5분! 손님이 엄지척 해요 👍', icon:'✨' };
+  if (t < 420) return { k:'over',  name:'너무 익음',  msg:'면이 퉁퉁 불었어요… 국물을 다 먹었네요.', icon:'💧' };
+  return              { k:'burnt', name:'탐…',       msg:'냄비가 새까맣게 탔어요! 환기부터 하세요 ㅠㅠ', icon:'💀' };
+}
+const noodleColor = t =>
+  t < 300 ? mix('#f2ecda', '#ffd23f', t/300) :
+  t < 420 ? mix('#ffd23f', '#f6e7b0', (t-300)/120) :
+            mix('#f6e7b0', '#2b211d', (t-420)/60);
+const brothColor = t =>
+  t < 420 ? mix('#9fd6ee', '#e4632d', t/120) : mix('#e4632d', '#3a2a20', (t-420)/60);
+
+// ---------- 장면 ----------
+function drawTopping(type, cx, cy, burnt) {
+  const dark = burnt ? 0.7 : 0;
+  const c = col => mix(col, '#2b211d', dark);
+  if (type === 'egg') { ell(cx, cy, 5, 3, c('#ffffff')); ell(cx, cy, 2, 1, c('#ffb81c')); }
+  if (type === 'onion') [[-3,0],[1,-1],[3,1],[-1,2],[0,-2],[-5,1]].forEach(([dx,dy]) => px(cx+dx, cy+dy, 2, 1, c('#3cb44b')));
+  if (type === 'fish') { ell(cx, cy, 4, 3, c('#ffffff')); px(cx-2, cy, 4, 1, c('#ff7aa8')); px(cx, cy-1, 1, 2, c('#ff7aa8')); }
+  if (type === 'cheese') { px(cx-3, cy-2, 6, 4, c('#ffd83a')); px(cx-1, cy-1, 1, 1, c('#e0a800')); }
+}
+
+function draw() {
+  const wall = performance.now();
+  const t = sec();
+  const st = stage(t);
+  const cooking = state === 'cooking';
+  const target = state === 'paused' ? 1 : 0;
+  lp += (target - lp) * 0.14;
+  const showRes = state === 'reveal';
+  const burnt = t >= 420;
+
+  // 배경(벽 + 물방울무늬 + 바닥)
+  px(0, 0, 96, 72, '#ffd9ec');
+  for (let y = 4; y < 56; y += 10) for (let x = (y/10 % 2) * 5 + 3; x < 96; x += 10) px(x, y, 2, 2, '#ffc0de');
+  px(0, 60, 96, 12, '#c98f5a'); px(0, 60, 96, 1, '#8a5a30');
+  for (let x = 0; x < 96; x += 16) px(x, 66, 8, 1, '#b07a48');
+  sprite(4, 4, HEART, { '#': '#ff74b4' });
+  sprite(86, 6, HEART, { '#': '#ffa0cf' });
+
+  // 냄비 몸통 + 손잡이
+  px(16, 36, 64, 26, '#8a8fa8'); px(16, 36, 4, 26, '#a6abc2'); px(76, 36, 4, 26, '#6f7490');
+  px(16, 60, 64, 2, '#5d627c');
+  px(10, 41, 6, 4, '#5d627c'); px(80, 41, 6, 4, '#5d627c');
+  // 냄비 입구
+  ell(48, 36, 32, 9, '#c5c9dc');
+  ell(48, 36, 29, 7, '#4a4e63');
+  ell(48, 36, 28, 6, brothColor(t));
+
+  // 거품
+  const bub = cooking ? 1 : 0.3;
+  for (let i = 0; i < 9; i++) {
+    const ph = (wall / 380 + i * 1.7);
+    if (Math.sin(ph) > 1 - bub * 0.9) {
+      const bx = 28 + ((i * 37) % 40), by = 34 + ((i * 11) % 5);
+      if (((bx-48)/26)**2 + ((by-36)/5.5)**2 < 1) px(bx, by, 2, 1, mix(brothColor(t), '#ffffff', 0.7));
+    }
+  }
+
+  // 면
+  const ph = cooking ? wall / 260 : 0;
+  const amp = Math.min(1, t / 150) * 3;
+  const thick = t > 330 ? 2 : 1;
+  const nc = noodleColor(t);
+  for (let i = 0; i < 6; i++) {
+    const y0 = 33.5 + i * 1.5;
+    for (let x = 23; x < 73; x++) {
+      const y = y0 + Math.sin(x * 0.45 + i * 2 + ph) * amp * 0.45;
+      if (((x-48)/26)**2 + ((y-36)/5.5)**2 < 1) px(x, y, 1, thick, i % 2 ? nc : mix(nc, '#ffffff', 0.18));
+    }
+  }
+
+  // 토핑 (떨어지는 연출)
+  toppings.forEach(tp => {
+    const off = Math.max(0, 1 - (wall - tp.wall) / 450) * 30;
+    const [x, y] = POS[tp.type];
+    drawTopping(tp.type, x, y - off, t >= 420);
+  });
+
+  // 뚜껑 (옆에 기대 둠 ↔ 냄비 덮음)
+  {
+    const L = lp;
+    const cx = 87 + (48 - 87) * L, cy = 60 + (31 - 60) * L - Math.sin(Math.PI * L) * 14;
+    const rx = 8 + (33 - 8) * L, ry = 3 + (9 - 3) * L;
+    ell(cx, cy, rx, ry, '#b9bdd1');
+    ell(cx, cy - 1, rx - 2, Math.max(1, ry - 2), '#d8dbea');
+    px(cx - 2, cy - ry - 1, 4, 2, '#5d627c');
+  }
+
+  // 김 / 연기
+  const steamOn = cooking || showRes || (state === 'paused' && lp > 0.9);
+  if (steamOn) {
+    const smoke = burnt && (showRes || cooking);
+    const col = smoke ? '#555060' : '#ffffff';
+    for (let i = 0; i < 7; i++) {
+      const rise = (wall / 90 + i * 9) % 26;
+      const x = 28 + i * 6 + Math.sin(wall / 400 + i) * 2;
+      const y = (showRes && lp < 0.2 ? 27 : 25) - rise;
+      if (y > 0) { g.globalAlpha = 1 - rise / 26; px(x, y, 3, 2, col); g.globalAlpha = 1; }
+    }
+  }
+
+  // 결과 연출
+  if (showRes) {
+    const blink = Math.floor(wall / 250) % 2;
+    if (st.k === 'perfect') {
+      [[14,16],[78,14],[24,6],[70,24]].forEach(([x,y],i) => {
+        const s = (i + blink) % 2;
+        px(x, y - 1 - s, 1, 3 + s*2, '#ffe14a'); px(x - 1 - s, y, 3 + s*2, 1, '#ffe14a');
+      });
+    } else if (st.k === 'burnt') {
+      [[16,14],[76,16]].forEach(([x,y]) => { px(x,y,1,1,'#555'); px(x+2,y,1,1,'#555'); px(x+1,y+1,1,1,'#555'); px(x,y+2,1,1,'#555'); px(x+2,y+2,1,1,'#555'); });
+    } else if (st.k === 'raw' || st.k === 'under') {
+      const dy = (wall / 120) % 8;
+      px(76, 12 + dy, 2, 3, '#5ec8ff'); px(79, 8 + dy, 1, 2, '#5ec8ff');
+    } else if (st.k === 'over') {
+      px(74, 16 + (wall / 140) % 6, 2, 3, '#5ec8ff');
+    }
+  }
+}
+
+// ---------- UI ----------
+function fmt(ms) {
+  const total = Math.floor(ms / 10), cs = total % 100, s = Math.floor(total / 100) % 60, m = Math.floor(total / 6000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(m)}:${p(s)}<small>.${p(cs)}</small>`;
+}
+
+function updateUI() {
+  lcd.innerHTML = fmt(nowMs());
+  const map = {
+    idle:    ['불 켜기', '토핑', true],
+    cooking: ['정지(뚜껑 닫기)', `토핑: ${toppings.length < 4 ? TOP[toppings.length][1] : '끝'}`, toppings.length >= 4],
+    paused:  ['계속 끓이기', '뚜껑 열기!', false],
+    reveal:  ['다시 하기', '완료', true],
+  };
+  const [p, s, dis] = map[state];
+  primary.textContent = p; secondary.textContent = s; secondary.disabled = dis;
+  primary.classList.toggle('stop', state === 'cooking');
+}
+
+function showResult() {
+  const t = sec(), st = stage(t);
+  resultEl.innerHTML = `<b>${st.icon} ${st.name}</b>${st.msg}<br>끓인 시간 ${Math.floor(t/60)}분 ${Math.floor(t%60)}초`;
+}
+
+function primaryClick() {
+  if (state === 'idle' || state === 'paused') { startMs = performance.now(); state = 'cooking'; resultEl.innerHTML = '보글보글 끓는 중…<br>뚜껑 속은 비밀이에요 ♥'; }
+  else if (state === 'cooking') { elapsed += performance.now() - startMs; state = 'paused'; }
+  else if (state === 'reveal') { state = 'idle'; elapsed = 0; toppings = []; logEl.textContent = ''; resultEl.innerHTML = '뚜껑 속이 궁금해…<br>5분이 가장 맛있대요 ♥'; }
+  updateUI();
+}
+
+function secondaryClick() {
+  if (state === 'cooking' && toppings.length < 4) {
+    const [type, name] = TOP[toppings.length];
+    toppings.push({ type, at: sec(), wall: performance.now() });
+    const s = Math.floor(sec());
+    logEl.textContent = toppings.map((tp, i) => `${TOP[i][1]} ${Math.floor(tp.at/60)}:${String(Math.floor(tp.at%60)).padStart(2,'0')}`).join(' · ');
+  } else if (state === 'paused') { state = 'reveal'; showResult(); }
+  updateUI();
+}
+
+primary.addEventListener('click', primaryClick);
+secondary.addEventListener('click', secondaryClick);
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  if (e.code === 'Space') { e.preventDefault(); primaryClick(); }
+  else if (e.key === 't' || e.key === 'T') { if (!secondary.disabled) secondaryClick(); }
+  else if (e.key === 'r' || e.key === 'R') { if (state === 'reveal') primaryClick(); }
+});
+
+function loop() {
+  draw();
+  if (state === 'cooking') lcd.innerHTML = fmt(nowMs()), updateUI();
+  requestAnimationFrame(loop);
+}
+updateUI();
+loop();
+</script>
+</body>
+</html>
